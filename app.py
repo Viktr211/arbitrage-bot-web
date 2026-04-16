@@ -1,15 +1,17 @@
 import streamlit as st
 import time
 import random
-from datetime import datetime
+import sqlite3
+from datetime import datetime, timedelta
+import pandas as pd
 
-st.set_page_config(page_title="Накопительный Арбитраж PRO v7.0", layout="wide", page_icon="🚀")
+st.set_page_config(page_title="Накопительный Арбитраж PRO v7.1", layout="wide", page_icon="🚀")
 
 # ====================== СТИЛЬ ======================
 st.markdown("""
 <style>
     .stApp { background: linear-gradient(180deg, #001a33 0%, #003087 100%); color: white; }
-    .main-header { font-size: 32px; font-weight: bold; color: #00D4FF; text-align: center; margin-bottom: 10px; }
+    .main-header { font-size: 32px; font-weight: bold; color: #00D4FF; text-align: center; }
     .status-dot { display: inline-block; width: 16px; height: 16px; border-radius: 50%; margin-right: 8px; }
     .status-running { background-color: #00FF88; box-shadow: 0 0 12px #00FF88; animation: pulse 2s infinite; }
     .status-stopped { background-color: #FF4444; }
@@ -17,120 +19,173 @@ st.markdown("""
 </style>
 """, unsafe_allow_html=True)
 
-st.markdown('<h1 class="main-header">🚀 НАКОПИТЕЛЬНЫЙ АРБИТРАЖ PRO v7.0</h1>', unsafe_allow_html=True)
+st.markdown('<h1 class="main-header">🚀 НАКОПИТЕЛЬНЫЙ АРБИТРАЖ PRO v7.1</h1>', unsafe_allow_html=True)
 
-# ====================== КОНФИГУРАЦИЯ ======================
-DEFAULT_ASSETS = ["BTC", "ETH", "SOL", "BNB", "XRP", "ADA", "AVAX", "LINK", "SUI", "HYPE"]
-MAIN_EXCHANGE = "okx"
-AUX_EXCHANGES = ["kucoin", "gateio", "bitget", "bingx", "mexc"]
+# ====================== БАЗА ДАННЫХ ======================
+DB_PATH = "arbitrage.db"
 
-MIN_SPREAD_PERCENT = 0.35
+def get_db():
+    conn = sqlite3.connect(DB_PATH)
+    conn.row_factory = sqlite3.Row
+    return conn
+
+def init_db():
+    conn = get_db()
+    conn.executescript('''
+        CREATE TABLE IF NOT EXISTS users (
+            id INTEGER PRIMARY KEY,
+            email TEXT UNIQUE,
+            password TEXT,
+            full_name TEXT,
+            wallet_address TEXT,
+            balance REAL DEFAULT 10000.0,
+            total_profit REAL DEFAULT 0.0,
+            trade_count INTEGER DEFAULT 0,
+            status TEXT DEFAULT 'pending',
+            created_at TEXT
+        );
+        CREATE TABLE IF NOT EXISTS trades (
+            id INTEGER PRIMARY KEY,
+            user_id INTEGER,
+            asset TEXT,
+            profit REAL,
+            buy_exchange TEXT,
+            sell_exchange TEXT,
+            trade_time TEXT
+        );
+        CREATE TABLE IF NOT EXISTS withdrawals (
+            id INTEGER PRIMARY KEY,
+            user_id INTEGER,
+            amount REAL,
+            wallet_address TEXT,
+            status TEXT DEFAULT 'pending',
+            requested_at TEXT
+        );
+    ''')
+    conn.commit()
+    conn.close()
+
+init_db()
 
 # ====================== СЕССИЯ ======================
 if 'logged_in' not in st.session_state:
     st.session_state.logged_in = False
+if 'is_admin' not in st.session_state:
+    st.session_state.is_admin = False
+if 'user_id' not in st.session_state:
+    st.session_state.user_id = None
 if 'username' not in st.session_state:
     st.session_state.username = None
-if 'email' not in st.session_state:
-    st.session_state.email = None
 if 'bot_running' not in st.session_state:
     st.session_state.bot_running = False
-if 'trade_mode' not in st.session_state:
-    st.session_state.trade_mode = "Демо"
-if 'total_profit' not in st.session_state:
-    st.session_state.total_profit = 0.0
-if 'history' not in st.session_state:
-    st.session_state.history = []
 
 # ====================== АВТОРИЗАЦИЯ ======================
 if not st.session_state.logged_in:
-    tab_reg, tab_login = st.tabs(["📝 Регистрация", "🔑 Вход"])
+    tab_reg, tab_login = st.tabs(["Регистрация", "Вход"])
     
     with tab_reg:
-        with st.form("reg_form"):
-            name = st.text_input("Имя пользователя")
+        with st.form("reg"):
+            full_name = st.text_input("ФИО")
             email = st.text_input("Email")
             password = st.text_input("Пароль", type="password")
+            wallet = st.text_input("Адрес кошелька USDT")
             if st.form_submit_button("Зарегистрироваться"):
-                if name and email and password:
-                    st.session_state.logged_in = True
-                    st.session_state.username = name
-                    st.session_state.email = email
-                    st.success("✅ Регистрация успешна!")
-                    st.rerun()
+                conn = get_db()
+                conn.execute("INSERT INTO users (email, password, full_name, wallet_address, created_at) VALUES (?, ?, ?, ?, ?)",
+                             (email, password, full_name, wallet, datetime.now().strftime("%Y-%m-%d %H:%M")))
+                conn.commit()
+                conn.close()
+                st.success("Заявка отправлена на одобрение администратору!")
     
     with tab_login:
-        with st.form("login_form"):
+        with st.form("login"):
             email = st.text_input("Email")
             password = st.text_input("Пароль", type="password")
             if st.form_submit_button("Войти"):
-                if email and password:
-                    st.session_state.logged_in = True
-                    st.session_state.username = email.split('@')[0]
-                    st.session_state.email = email
-                    st.success(f"✅ Добро пожаловать!")
-                    st.rerun()
+                conn = get_db()
+                user = conn.execute("SELECT * FROM users WHERE email = ? AND password = ?", (email, password)).fetchone()
+                conn.close()
+                if user:
+                    if user['status'] == 'approved':
+                        st.session_state.logged_in = True
+                        st.session_state.username = user['full_name']
+                        st.session_state.user_id = user['id']
+                        st.session_state.is_admin = (email == "cb777899@gmail.com")
+                        st.success(f"Добро пожаловать, {user['full_name']}!")
+                        st.rerun()
+                    else:
+                        st.warning("Ваша заявка ещё не одобрена администратором.")
+                else:
+                    st.error("Неверный логин или пароль")
     st.stop()
 
-# ====================== ГЛАВНЫЙ ИНТЕРФЕЙС ======================
+# ====================== ОСНОВНОЙ ИНТЕРФЕЙС ======================
 st.write(f"👤 **{st.session_state.username}**")
 
-# Статус
-status_color = "status-running" if st.session_state.bot_running else "status-stopped"
-status_text = "● РАБОТАЕТ 24/7" if st.session_state.bot_running else "● ОСТАНОВЛЕН"
-st.markdown(f'<div style="text-align:center; font-size:18px;"><span class="status-dot {status_color}"></span><b>{status_text}</b></div>', unsafe_allow_html=True)
+if st.session_state.is_admin:
+    st.success("👑 Вы вошли как Администратор")
 
-# Кнопки
-c1, c2, c3 = st.columns(3)
-if c1.button("▶ СТАРТ", type="primary", use_container_width=True):
+# Кнопки управления ботом
+col1, col2, col3 = st.columns(3)
+if col1.button("▶ Запустить бота", type="primary"):
     st.session_state.bot_running = True
-if c2.button("⏸ ПАУЗА", use_container_width=True):
+if col2.button("⏸ Пауза"):
     st.session_state.bot_running = False
-if c3.button("⏹ СТОП", use_container_width=True):
+if col3.button("⏹ Стоп"):
     st.session_state.bot_running = False
-
-st.session_state.trade_mode = st.radio("Режим работы", ["Демо", "Реальный"], horizontal=True)
 
 # Вкладки
-tabs = st.tabs(["📊 Dashboard", "📈 Графики", "🔄 Арбитраж", "📦 Портфель", "💰 Кошелёк", "📜 История"])
+if st.session_state.is_admin:
+    tabs = st.tabs(["Dashboard", "Арбитраж", "Пользователи", "Заявки на вывод", "История"])
+else:
+    tabs = st.tabs(["Dashboard", "Арбитраж", "Портфель", "Кошелёк", "История"])
 
+# Dashboard
 with tabs[0]:
-    st.metric("💰 Общая прибыль", f"{st.session_state.total_profit:.2f} USDT")
+    st.metric("💰 Общая прибыль", "0.00 USDT")   # будет обновляться позже
 
-with tabs[2]:
-    st.subheader("🔍 Арбитраж")
-    if st.button("🔄 Найти арбитражные возможности"):
-        st.info("Поиск спреда между OKX и другими биржами...")
-        # Симуляция
-        st.success("Найдено 3 возможности!")
-        st.info("🎯 HYPE → +5.42 USDT")
-        st.info("🎯 SOL  → +3.18 USDT")
+# Арбитраж
+with tabs[1]:
+    st.subheader("🔄 Арбитраж")
+    if st.button("Найти возможности"):
+        st.info("Идёт поиск спреда... (пока симуляция)")
+        st.success("Найдено 2 возможности")
 
-with tabs[3]:
-    st.subheader("📦 Портфель на OKX")
-    for asset in DEFAULT_ASSETS:
-        st.write(f"**{asset}**: {random.uniform(0.1, 100):.4f}")
-    st.metric("Общая стоимость", "$10,245.67")
+# Админ-панель (только для админа)
+if st.session_state.is_admin and len(tabs) > 2:
+    with tabs[2]:
+        st.subheader("👥 Управление пользователями")
+        conn = get_db()
+        users = conn.execute("SELECT * FROM users").fetchall()
+        conn.close()
+        for user in users:
+            st.write(f"{user['full_name']} ({user['email']}) — Статус: {user['status']}")
+            if user['status'] == 'pending':
+                col_a, col_b = st.columns(2)
+                if col_a.button("✅ Одобрить", key=f"approve_{user['id']}"):
+                    conn = get_db()
+                    conn.execute("UPDATE users SET status = 'approved' WHERE id = ?", (user['id'],))
+                    conn.commit()
+                    conn.close()
+                    st.success("Пользователь одобрен!")
+                    st.rerun()
 
-with tabs[5]:
+# Заявки на вывод (для админа)
+if st.session_state.is_admin and len(tabs) > 3:
+    with tabs[3]:
+        st.subheader("💰 Заявки на вывод")
+        st.info("Вывод средств обрабатывается по вторникам и пятницам.")
+
+# История
+with tabs[-1]:
     st.subheader("📜 История сделок")
-    if st.session_state.history:
-        for trade in reversed(st.session_state.history[-20:]):
-            st.write(trade)
-    else:
-        st.info("Пока нет сделок")
+    st.info("Здесь будет история арбитражных сделок")
 
-# ====================== ОСНОВНОЙ ЦИКЛ ======================
+# Авто-арбитраж (симуляция)
 if st.session_state.bot_running:
-    time.sleep(5)
-    asset = random.choice(DEFAULT_ASSETS)
-    profit = round(random.uniform(1.5, 7.5), 2)
-    
-    st.session_state.total_profit += profit
-    trade_text = f"✅ {datetime.now().strftime('%H:%M:%S')} | {asset} | +{profit:.2f} USDT"
-    st.session_state.history.append(trade_text)
-    
-    st.toast(f"🎯 Сделка по {asset} | +{profit} USDT", icon="💰")
+    time.sleep(8)
+    profit = round(random.uniform(2.0, 8.0), 2)
+    st.session_state.total_profit = st.session_state.get('total_profit', 0) + profit
     st.rerun()
 
-st.caption("Накопительный Арбитраж PRO v7.0 — всё в одном файле")
+st.caption("v7.1 — с одобрением регистрации и выводом по одобрению")
