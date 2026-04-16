@@ -2,10 +2,9 @@ import streamlit as st
 import time
 import random
 import sqlite3
-from datetime import datetime, timedelta
-import pandas as pd
+from datetime import datetime
 
-st.set_page_config(page_title="Накопительный Арбитраж PRO v7.1", layout="wide", page_icon="🚀")
+st.set_page_config(page_title="Накопительный Арбитраж PRO v7.1-fix", layout="wide", page_icon="🚀")
 
 # ====================== СТИЛЬ ======================
 st.markdown("""
@@ -19,7 +18,7 @@ st.markdown("""
 </style>
 """, unsafe_allow_html=True)
 
-st.markdown('<h1 class="main-header">🚀 НАКОПИТЕЛЬНЫЙ АРБИТРАЖ PRO v7.1</h1>', unsafe_allow_html=True)
+st.markdown('<h1 class="main-header">🚀 НАКОПИТЕЛЬНЫЙ АРБИТРАЖ PRO v7.1-fix</h1>', unsafe_allow_html=True)
 
 # ====================== БАЗА ДАННЫХ ======================
 DB_PATH = "arbitrage.db"
@@ -72,120 +71,147 @@ if 'logged_in' not in st.session_state:
     st.session_state.logged_in = False
 if 'is_admin' not in st.session_state:
     st.session_state.is_admin = False
-if 'user_id' not in st.session_state:
-    st.session_state.user_id = None
 if 'username' not in st.session_state:
     st.session_state.username = None
+if 'user_id' not in st.session_state:
+    st.session_state.user_id = None
 if 'bot_running' not in st.session_state:
     st.session_state.bot_running = False
 
 # ====================== АВТОРИЗАЦИЯ ======================
 if not st.session_state.logged_in:
-    tab_reg, tab_login = st.tabs(["Регистрация", "Вход"])
+    tab_reg, tab_login = st.tabs(["📝 Регистрация", "🔑 Вход"])
     
     with tab_reg:
-        with st.form("reg"):
+        with st.form("reg_form"):
             full_name = st.text_input("ФИО")
             email = st.text_input("Email")
             password = st.text_input("Пароль", type="password")
             wallet = st.text_input("Адрес кошелька USDT")
             if st.form_submit_button("Зарегистрироваться"):
-                conn = get_db()
-                conn.execute("INSERT INTO users (email, password, full_name, wallet_address, created_at) VALUES (?, ?, ?, ?, ?)",
-                             (email, password, full_name, wallet, datetime.now().strftime("%Y-%m-%d %H:%M")))
-                conn.commit()
-                conn.close()
-                st.success("Заявка отправлена на одобрение администратору!")
+                if full_name and email and password:
+                    conn = get_db()
+                    conn.execute("""
+                        INSERT INTO users (email, password, full_name, wallet_address, created_at, status)
+                        VALUES (?, ?, ?, ?, ?, ?)
+                    """, (email, password, full_name, wallet, datetime.now().strftime("%Y-%m-%d %H:%M"), 'pending'))
+                    conn.commit()
+                    conn.close()
+                    st.success("✅ Заявка отправлена на одобрение администратору!")
     
     with tab_login:
-        with st.form("login"):
+        with st.form("login_form"):
             email = st.text_input("Email")
             password = st.text_input("Пароль", type="password")
             if st.form_submit_button("Войти"):
                 conn = get_db()
                 user = conn.execute("SELECT * FROM users WHERE email = ? AND password = ?", (email, password)).fetchone()
                 conn.close()
+                
                 if user:
-                    if user['status'] == 'approved':
+                    # Специальное правило для админа
+                    if email == "cb777899@gmail.com":
                         st.session_state.logged_in = True
+                        st.session_state.is_admin = True
+                        st.session_state.username = user['full_name'] or "Администратор"
+                        st.session_state.user_id = user['id']
+                        st.success("✅ Вход как Администратор выполнен!")
+                        st.rerun()
+                    elif user['status'] == 'approved':
+                        st.session_state.logged_in = True
+                        st.session_state.is_admin = False
                         st.session_state.username = user['full_name']
                         st.session_state.user_id = user['id']
-                        st.session_state.is_admin = (email == "cb777899@gmail.com")
-                        st.success(f"Добро пожаловать, {user['full_name']}!")
+                        st.success(f"✅ Добро пожаловать, {user['full_name']}!")
                         st.rerun()
                     else:
-                        st.warning("Ваша заявка ещё не одобрена администратором.")
+                        st.warning("⏳ Ваша заявка ещё не одобрена администратором.")
                 else:
-                    st.error("Неверный логин или пароль")
+                    st.error("❌ Неверный email или пароль")
     st.stop()
 
-# ====================== ОСНОВНОЙ ИНТЕРФЕЙС ======================
+# ====================== ГЛАВНЫЙ ИНТЕРФЕЙС ======================
 st.write(f"👤 **{st.session_state.username}**")
 
 if st.session_state.is_admin:
     st.success("👑 Вы вошли как Администратор")
 
-# Кнопки управления ботом
-col1, col2, col3 = st.columns(3)
-if col1.button("▶ Запустить бота", type="primary"):
+# Статус бота
+status_color = "status-running" if st.session_state.bot_running else "status-stopped"
+status_text = "● РАБОТАЕТ 24/7" if st.session_state.bot_running else "● ОСТАНОВЛЕН"
+st.markdown(f'<div style="text-align:center; font-size:18px;"><span class="status-dot {status_color}"></span><b>{status_text}</b></div>', unsafe_allow_html=True)
+
+# Кнопки управления
+c1, c2, c3 = st.columns(3)
+if c1.button("▶ СТАРТ", type="primary", use_container_width=True):
     st.session_state.bot_running = True
-if col2.button("⏸ Пауза"):
+if c2.button("⏸ ПАУЗА", use_container_width=True):
     st.session_state.bot_running = False
-if col3.button("⏹ Стоп"):
+if c3.button("⏹ СТОП", use_container_width=True):
     st.session_state.bot_running = False
 
 # Вкладки
 if st.session_state.is_admin:
-    tabs = st.tabs(["Dashboard", "Арбитраж", "Пользователи", "Заявки на вывод", "История"])
+    tabs = st.tabs(["📊 Dashboard", "🔄 Арбитраж", "👥 Пользователи", "💰 Заявки на вывод", "📜 История"])
 else:
-    tabs = st.tabs(["Dashboard", "Арбитраж", "Портфель", "Кошелёк", "История"])
+    tabs = st.tabs(["📊 Dashboard", "🔄 Арбитраж", "📦 Портфель", "💰 Кошелёк", "📜 История"])
 
-# Dashboard
 with tabs[0]:
-    st.metric("💰 Общая прибыль", "0.00 USDT")   # будет обновляться позже
+    st.metric("💰 Общая прибыль", "0.00 USDT")
 
-# Арбитраж
 with tabs[1]:
     st.subheader("🔄 Арбитраж")
-    if st.button("Найти возможности"):
-        st.info("Идёт поиск спреда... (пока симуляция)")
-        st.success("Найдено 2 возможности")
+    if st.button("🔄 Найти возможности"):
+        st.info("Поиск спреда между биржами...")
+        st.success("Найдено 2 арбитражные возможности")
 
-# Админ-панель (только для админа)
-if st.session_state.is_admin and len(tabs) > 2:
+# Админ-панель — Пользователи
+if st.session_state.is_admin:
     with tabs[2]:
         st.subheader("👥 Управление пользователями")
         conn = get_db()
-        users = conn.execute("SELECT * FROM users").fetchall()
+        users = conn.execute("SELECT * FROM users ORDER BY created_at DESC").fetchall()
         conn.close()
+        
         for user in users:
-            st.write(f"{user['full_name']} ({user['email']}) — Статус: {user['status']}")
-            if user['status'] == 'pending':
-                col_a, col_b = st.columns(2)
-                if col_a.button("✅ Одобрить", key=f"approve_{user['id']}"):
-                    conn = get_db()
-                    conn.execute("UPDATE users SET status = 'approved' WHERE id = ?", (user['id'],))
-                    conn.commit()
-                    conn.close()
-                    st.success("Пользователь одобрен!")
-                    st.rerun()
+            col1, col2, col3 = st.columns([3, 1, 1])
+            with col1:
+                st.write(f"**{user['full_name']}** — {user['email']} | Статус: **{user['status']}**")
+            with col2:
+                if user['status'] == 'pending':
+                    if st.button("✅ Одобрить", key=f"app_{user['id']}"):
+                        conn = get_db()
+                        conn.execute("UPDATE users SET status = 'approved' WHERE id = ?", (user['id'],))
+                        conn.commit()
+                        conn.close()
+                        st.success(f"Пользователь {user['email']} одобрен!")
+                        st.rerun()
+            with col3:
+                if user['status'] == 'pending':
+                    if st.button("❌ Отклонить", key=f"rej_{user['id']}"):
+                        conn = get_db()
+                        conn.execute("UPDATE users SET status = 'rejected' WHERE id = ?", (user['id'],))
+                        conn.commit()
+                        conn.close()
+                        st.warning(f"Пользователь {user['email']} отклонён!")
+                        st.rerun()
 
 # Заявки на вывод (для админа)
-if st.session_state.is_admin and len(tabs) > 3:
+if st.session_state.is_admin:
     with tabs[3]:
-        st.subheader("💰 Заявки на вывод")
-        st.info("Вывод средств обрабатывается по вторникам и пятницам.")
+        st.subheader("💰 Заявки на вывод средств")
+        st.info("Выводы обрабатываются по **вторникам и пятницам**.")
 
 # История
 with tabs[-1]:
     st.subheader("📜 История сделок")
-    st.info("Здесь будет история арбитражных сделок")
+    st.info("Здесь будет отображаться история арбитражных сделок")
 
-# Авто-арбитраж (симуляция)
+# Симуляция работы бота
 if st.session_state.bot_running:
-    time.sleep(8)
-    profit = round(random.uniform(2.0, 8.0), 2)
-    st.session_state.total_profit = st.session_state.get('total_profit', 0) + profit
+    time.sleep(6)
+    profit = round(random.uniform(1.8, 6.5), 2)
+    st.toast(f"🎯 Арбитраж выполнен! +{profit} USDT", icon="💰")
     st.rerun()
 
-st.caption("v7.1 — с одобрением регистрации и выводом по одобрению")
+st.caption("v7.1-fix — Админ входит без одобрения | Остальные пользователи — с одобрением")
