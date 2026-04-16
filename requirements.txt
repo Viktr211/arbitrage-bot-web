@@ -2,4 +2,4 @@ streamlit
 ccxt
 pandas
 plotly
-sqlite3
+
